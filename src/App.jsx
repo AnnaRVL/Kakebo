@@ -1,4 +1,29 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+
+// ── Supabase config ──
+const SUPABASE_URL = "https://xcqhdqiwjbznogyknbzq.supabase.co";
+const SUPABASE_KEY = "sb_publishable_Qq2wKi6JOS2olbgCubqxlQ_lGVcXBZf";
+
+async function sbGet(monthKey) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/kakebo?month_key=eq.${monthKey}&select=data`, {
+    headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` }
+  });
+  const rows = await res.json();
+  return rows?.[0]?.data || null;
+}
+
+async function sbUpsert(monthKey, data) {
+  await fetch(`${SUPABASE_URL}/rest/v1/kakebo`, {
+    method: "POST",
+    headers: {
+      "apikey": SUPABASE_KEY,
+      "Authorization": `Bearer ${SUPABASE_KEY}`,
+      "Content-Type": "application/json",
+      "Prefer": "resolution=merge-duplicates"
+    },
+    body: JSON.stringify({ month_key: monthKey, data })
+  });
+}
 
 const CATEGORIES = [
   { id: "supervivencia", label: "Supervivencia", color: "#7bc47f", bg: "#f0faf0", emoji: "🌿" },
@@ -9,7 +34,6 @@ const CATEGORIES = [
 
 const MONTHS = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 const today = new Date();
-const STORAGE_KEY = "kakebo_data_v1";
 
 function getWeeksInMonth(year, month) {
   const weeks = [];
@@ -32,27 +56,42 @@ function initMonth() {
   return { ingresos: [], gastosFijos: [], ahorroPrevisto: "", gastos: {}, creditCard: [], reflexion: { objetivos: "", promesas: "", balance: "", mejora: "" } };
 }
 
-function loadAllData() {
-  try { const raw = localStorage.getItem(STORAGE_KEY); return raw ? JSON.parse(raw) : {}; } catch { return {}; }
-}
-function saveAllData(data) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch {}
-}
-
 export default function Kakebo() {
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
   const [view, setView] = useState("mes");
   const [weekIdx, setWeekIdx] = useState(0);
-  const [allData, setAllData] = useState(() => loadAllData());
+  const [mdata, setMdata] = useState(initMonth());
+  const [loading, setLoading] = useState(true);
+  const [saveStatus, setSaveStatus] = useState(null);
+  const saveTimer = useRef(null);
 
   const key = monthKey(year, month);
-  const mdata = allData[key] || initMonth();
+
+  useEffect(() => {
+    setLoading(true);
+    sbGet(key).then(data => {
+      setMdata(data || initMonth());
+      setLoading(false);
+    }).catch(() => {
+      setMdata(initMonth());
+      setLoading(false);
+    });
+  }, [key]);
 
   function updateMonth(newMdata) {
-    const updated = { ...allData, [key]: newMdata };
-    setAllData(updated);
-    saveAllData(updated);
+    setMdata(newMdata);
+    setSaveStatus("saving");
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      try {
+        await sbUpsert(key, newMdata);
+        setSaveStatus("saved");
+        setTimeout(() => setSaveStatus(null), 2000);
+      } catch {
+        setSaveStatus("error");
+      }
+    }, 800);
   }
 
   const weeks = getWeeksInMonth(year, month);
@@ -109,6 +148,8 @@ export default function Kakebo() {
         .gastos-grid th { font-weight: 600; color: #666; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
         .fade-in { animation: fadeIn 0.3s ease; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid #eee; border-top-color: #e83e8c; border-radius: 50%; animation: spin 0.6s linear infinite; }
       `}</style>
 
       <div style={{ maxWidth: 800, margin: "0 auto", padding: "16px 12px" }}>
@@ -116,7 +157,12 @@ export default function Kakebo() {
           <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 11, letterSpacing: "0.25em", textTransform: "uppercase", color: "#999", marginBottom: 4 }}>Libro de cuentas para el ahorro doméstico</div>
           <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 36, fontWeight: 900, color: "#e83e8c", letterSpacing: 2, lineHeight: 1 }}>KAKEBO</div>
           <div style={{ fontSize: 11, color: "#aaa", letterSpacing: "0.15em", marginTop: 2 }}>家計簿</div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 16, marginTop: 14 }}>
+          <div style={{ height: 20, marginTop: 6, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+            {saveStatus === "saving" && <><span className="spinner" /><span style={{ fontSize: 11, color: "#aaa" }}>Guardando...</span></>}
+            {saveStatus === "saved" && <span style={{ fontSize: 11, color: "#7bc47f" }}>✓ Guardado en la nube</span>}
+            {saveStatus === "error" && <span style={{ fontSize: 11, color: "#e07a7a" }}>⚠ Error al guardar</span>}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 16, marginTop: 8 }}>
             <button className="btn btn-ghost btn-sm" onClick={prevMonth}>‹</button>
             <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 700, minWidth: 200, textAlign: "center" }}>{MONTHS[month]} {year}</div>
             <button className="btn btn-ghost btn-sm" onClick={nextMonth}>›</button>
@@ -131,96 +177,102 @@ export default function Kakebo() {
           <span className={`tab ${view === "final" ? "active" : ""}`} onClick={() => setView("final")}>③ Final de mes</span>
         </div>
 
-        {view === "mes" && (
-          <div className="fade-in">
-            <SectionTitle>Las cuentas claras, mes a mes</SectionTitle>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
-              <Card color="#7bc47f">
-                <CardTitle color="#7bc47f">INGRESOS · 収入</CardTitle>
-                <table style={{ width: "100%", borderCollapse: "collapse" }} className="gastos-grid">
-                  <thead><tr><th>Fecha</th><th>Concepto</th><th>Importe</th><th></th></tr></thead>
-                  <tbody>
-                    {mdata.ingresos.map((row, i) => (
-                      <tr key={i}>
-                        <td><input type="text" value={row.fecha} onChange={e => updateIngreso(i, "fecha", e.target.value)} placeholder="dd/mm" style={{ width: 50 }} /></td>
-                        <td><input type="text" value={row.concepto} onChange={e => updateIngreso(i, "concepto", e.target.value)} placeholder="Concepto" /></td>
-                        <td><input type="number" value={row.importe} onChange={e => updateIngreso(i, "importe", e.target.value)} placeholder="0" style={{ width: 60 }} /></td>
-                        <td><button style={{ background: "none", border: "none", cursor: "pointer", color: "#ccc", fontSize: 14 }} onClick={() => removeIngreso(i)}>✕</button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <button className="btn btn-sm" style={{ background: "#7bc47f", color: "white" }} onClick={addIngreso}>+ Añadir</button>
-                  <TotalBadge color="#7bc47f">{totalIngresos.toFixed(2)} €</TotalBadge>
-                </div>
-              </Card>
-              <Card color="#e07a7a">
-                <CardTitle color="#e07a7a">GASTOS FIJOS · 支出</CardTitle>
-                <table style={{ width: "100%", borderCollapse: "collapse" }} className="gastos-grid">
-                  <thead><tr><th>Concepto</th><th>Importe</th><th></th></tr></thead>
-                  <tbody>
-                    {mdata.gastosFijos.map((row, i) => (
-                      <tr key={i}>
-                        <td><input type="text" value={row.concepto} onChange={e => updateFijo(i, "concepto", e.target.value)} placeholder="Concepto" /></td>
-                        <td><input type="number" value={row.importe} onChange={e => updateFijo(i, "importe", e.target.value)} placeholder="0" style={{ width: 60 }} /></td>
-                        <td><button style={{ background: "none", border: "none", cursor: "pointer", color: "#ccc", fontSize: 14 }} onClick={() => removeFijo(i)}>✕</button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <button className="btn btn-sm" style={{ background: "#e07a7a", color: "white" }} onClick={addFijo}>+ Añadir</button>
-                  <TotalBadge color="#e07a7a">{totalFijos.toFixed(2)} €</TotalBadge>
-                </div>
-              </Card>
-            </div>
-            <Card color="#e83e8c" style={{ marginBottom: 16 }}>
-              <CardTitle color="#e83e8c">PRESUPUESTO MENSUAL · 予算</CardTitle>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginTop: 8 }}>
-                <BigNumber color="#7bc47f">{totalIngresos.toFixed(0)} €</BigNumber><Op>−</Op>
-                <BigNumber color="#e07a7a">{totalFijos.toFixed(0)} €</BigNumber><Op>=</Op>
-                <BigNumber color="#2a9d8f">{(totalIngresos-totalFijos).toFixed(0)} €</BigNumber>
-              </div>
-              <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <label style={{ fontSize: 13, color: "#666" }}>Ahorro previsto:</label>
-                <input type="number" value={mdata.ahorroPrevisto} onChange={e => updateMonth({ ...mdata, ahorroPrevisto: e.target.value })} placeholder="0" style={{ width: 80, fontSize: 16, fontWeight: 700 }} />
-                <span style={{ color: "#666" }}>€</span><Op>=</Op>
-                <BigNumber color="#e83e8c">{presupuesto.toFixed(0)} €</BigNumber>
-                <span style={{ fontSize: 12, color: "#999" }}>disponible para gastos semanales</span>
-              </div>
-            </Card>
-            <Card color="#74b3ce">
-              <CardTitle color="#74b3ce">OBJETIVOS Y PROMESAS</CardTitle>
-              <label style={{ fontSize: 12, fontWeight: 600, color: "#74b3ce", display: "block", marginBottom: 4 }}>¿Cuáles son tus objetivos mensuales?</label>
-              <textarea rows={2} value={mdata.reflexion?.objetivos || ""} onChange={e => updateMonth({ ...mdata, reflexion: { ...mdata.reflexion, objetivos: e.target.value } })} placeholder="Escribe tus objetivos para este mes..." />
-              <label style={{ fontSize: 12, fontWeight: 600, color: "#74b3ce", display: "block", margin: "10px 0 4px" }}>¿Y tus promesas?</label>
-              <textarea rows={2} value={mdata.reflexion?.promesas || ""} onChange={e => updateMonth({ ...mdata, reflexion: { ...mdata.reflexion, promesas: e.target.value } })} placeholder="Anota tus promesas kakebo..." />
-            </Card>
+        {loading ? (
+          <div style={{ textAlign: "center", padding: 60, color: "#aaa" }}>
+            <div className="spinner" style={{ width: 24, height: 24, margin: "0 auto 12px", borderWidth: 3 }} />
+            <div style={{ fontSize: 13 }}>Cargando datos...</div>
           </div>
+        ) : (
+          <>
+            {view === "mes" && (
+              <div className="fade-in">
+                <SectionTitle>Las cuentas claras, mes a mes</SectionTitle>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+                  <Card color="#7bc47f">
+                    <CardTitle color="#7bc47f">INGRESOS · 収入</CardTitle>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }} className="gastos-grid">
+                      <thead><tr><th>Fecha</th><th>Concepto</th><th>Importe</th><th></th></tr></thead>
+                      <tbody>
+                        {mdata.ingresos.map((row, i) => (
+                          <tr key={i}>
+                            <td><input type="text" value={row.fecha} onChange={e => updateIngreso(i, "fecha", e.target.value)} placeholder="dd/mm" style={{ width: 50 }} /></td>
+                            <td><input type="text" value={row.concepto} onChange={e => updateIngreso(i, "concepto", e.target.value)} placeholder="Concepto" /></td>
+                            <td><input type="number" value={row.importe} onChange={e => updateIngreso(i, "importe", e.target.value)} placeholder="0" style={{ width: 60 }} /></td>
+                            <td><button style={{ background: "none", border: "none", cursor: "pointer", color: "#ccc", fontSize: 14 }} onClick={() => removeIngreso(i)}>✕</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <button className="btn btn-sm" style={{ background: "#7bc47f", color: "white" }} onClick={addIngreso}>+ Añadir</button>
+                      <TotalBadge color="#7bc47f">{totalIngresos.toFixed(2)} €</TotalBadge>
+                    </div>
+                  </Card>
+                  <Card color="#e07a7a">
+                    <CardTitle color="#e07a7a">GASTOS FIJOS · 支出</CardTitle>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }} className="gastos-grid">
+                      <thead><tr><th>Concepto</th><th>Importe</th><th></th></tr></thead>
+                      <tbody>
+                        {mdata.gastosFijos.map((row, i) => (
+                          <tr key={i}>
+                            <td><input type="text" value={row.concepto} onChange={e => updateFijo(i, "concepto", e.target.value)} placeholder="Concepto" /></td>
+                            <td><input type="number" value={row.importe} onChange={e => updateFijo(i, "importe", e.target.value)} placeholder="0" style={{ width: 60 }} /></td>
+                            <td><button style={{ background: "none", border: "none", cursor: "pointer", color: "#ccc", fontSize: 14 }} onClick={() => removeFijo(i)}>✕</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <button className="btn btn-sm" style={{ background: "#e07a7a", color: "white" }} onClick={addFijo}>+ Añadir</button>
+                      <TotalBadge color="#e07a7a">{totalFijos.toFixed(2)} €</TotalBadge>
+                    </div>
+                  </Card>
+                </div>
+                <Card color="#e83e8c" style={{ marginBottom: 16 }}>
+                  <CardTitle color="#e83e8c">PRESUPUESTO MENSUAL · 予算</CardTitle>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginTop: 8 }}>
+                    <BigNumber color="#7bc47f">{totalIngresos.toFixed(0)} €</BigNumber><Op>−</Op>
+                    <BigNumber color="#e07a7a">{totalFijos.toFixed(0)} €</BigNumber><Op>=</Op>
+                    <BigNumber color="#2a9d8f">{(totalIngresos-totalFijos).toFixed(0)} €</BigNumber>
+                  </div>
+                  <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <label style={{ fontSize: 13, color: "#666" }}>Ahorro previsto:</label>
+                    <input type="number" value={mdata.ahorroPrevisto} onChange={e => updateMonth({ ...mdata, ahorroPrevisto: e.target.value })} placeholder="0" style={{ width: 80, fontSize: 16, fontWeight: 700 }} />
+                    <span style={{ color: "#666" }}>€</span><Op>=</Op>
+                    <BigNumber color="#e83e8c">{presupuesto.toFixed(0)} €</BigNumber>
+                    <span style={{ fontSize: 12, color: "#999" }}>disponible para gastos semanales</span>
+                  </div>
+                </Card>
+                <Card color="#74b3ce">
+                  <CardTitle color="#74b3ce">OBJETIVOS Y PROMESAS</CardTitle>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: "#74b3ce", display: "block", marginBottom: 4 }}>¿Cuáles son tus objetivos mensuales?</label>
+                  <textarea rows={2} value={mdata.reflexion?.objetivos || ""} onChange={e => updateMonth({ ...mdata, reflexion: { ...mdata.reflexion, objetivos: e.target.value } })} placeholder="Escribe tus objetivos para este mes..." />
+                  <label style={{ fontSize: 12, fontWeight: 600, color: "#74b3ce", display: "block", margin: "10px 0 4px" }}>¿Y tus promesas?</label>
+                  <textarea rows={2} value={mdata.reflexion?.promesas || ""} onChange={e => updateMonth({ ...mdata, reflexion: { ...mdata.reflexion, promesas: e.target.value } })} placeholder="Anota tus promesas kakebo..." />
+                </Card>
+              </div>
+            )}
+            {view === "semana" && (
+              <WeekView
+                key={`${key}-w${weekIdx}`}
+                week={weeks[weekIdx] || []} weekNum={weekIdx+1} mdata={mdata} presupuesto={presupuesto}
+                gastosPrevios={weeks.slice(0, weekIdx).reduce((s, _, i) => s + totalGastosSemana(i), 0)}
+                addGasto={addGasto} removeGasto={removeGasto}
+                weeklyTotal={(catId) => weeklyTotal(weekIdx, catId)}
+                totalSemana={() => totalGastosSemana(weekIdx)}
+                month={month} year={year}
+              />
+            )}
+            {view === "final" && (
+              <FinalView
+                weeks={weeks} mdata={mdata} updateMonth={updateMonth}
+                totalIngresos={totalIngresos} totalFijos={totalFijos} ahorroPrevisto={ahorroPrevisto}
+                ahorroReal={ahorroReal} totalGastosMes={totalGastosMes()}
+                totalCategoriaMes={totalCategoriaMes} weeklyTotal={weeklyTotal} totalGastosSemana={totalGastosSemana}
+              />
+            )}
+          </>
         )}
-
-        {view === "semana" && (
-          <WeekView
-            key={`${key}-w${weekIdx}`}
-            week={weeks[weekIdx] || []} weekNum={weekIdx+1} mdata={mdata} presupuesto={presupuesto}
-            gastosPrevios={weeks.slice(0, weekIdx).reduce((s, _, i) => s + totalGastosSemana(i), 0)}
-            addGasto={addGasto} removeGasto={removeGasto}
-            weeklyTotal={(catId) => weeklyTotal(weekIdx, catId)}
-            totalSemana={() => totalGastosSemana(weekIdx)}
-            month={month} year={year}
-          />
-        )}
-
-        {view === "final" && (
-          <FinalView
-            weeks={weeks} mdata={mdata} updateMonth={updateMonth}
-            totalIngresos={totalIngresos} totalFijos={totalFijos} ahorroPrevisto={ahorroPrevisto}
-            ahorroReal={ahorroReal} totalGastosMes={totalGastosMes()}
-            totalCategoriaMes={totalCategoriaMes} weeklyTotal={weeklyTotal} totalGastosSemana={totalGastosSemana}
-          />
-        )}
-
         <div style={{ textAlign: "center", marginTop: 24, paddingTop: 16, borderTop: "1px solid #eee", fontSize: 11, color: "#ccc", letterSpacing: "0.1em" }}>
           KAKEBO · 家計簿 · El método japonés para aprender a ahorrar
         </div>
@@ -426,7 +478,7 @@ function FinalView({ weeks, mdata, updateMonth, totalIngresos, totalFijos, ahorr
 }
 
 function SectionTitle({ children }) { return <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 16, fontWeight: 700, color: "#2a2a2a", marginBottom: 12, paddingBottom: 6, borderBottom: "2px solid #f0ebe3", letterSpacing: "0.03em" }}>{children}</div>; }
-function Card({ children, color, style={} }) { return <div style={{ background: "white", borderRadius: 10, padding: "14px 16px", boxShadow: "0 2px 12px rgba(0,0,0,0.06)", borderTop: `3px solid ${color}`, marginBottom: 0, ...style }}>{children}</div>; }
+function Card({ children, color, style={} }) { return <div style={{ background: "white", borderRadius: 10, padding: "14px 16px", boxShadow: "0 2px 12px rgba(0,0,0,0.06)", borderTop: `3px solid ${color}`, ...style }}>{children}</div>; }
 function CardTitle({ children, color, style={} }) { return <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color, marginBottom: 8, ...style }}>{children}</div>; }
 function TotalBadge({ children, color }) { return <span style={{ background: color, color: "white", borderRadius: 20, padding: "3px 12px", fontSize: 13, fontWeight: 700 }}>{children}</span>; }
 function BigNumber({ children, color }) { return <div style={{ fontSize: 24, fontWeight: 900, fontFamily: "'Playfair Display',serif", color }}>{children}</div>; }
