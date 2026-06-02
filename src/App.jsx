@@ -25,6 +25,31 @@ async function sbUpsert(monthKey, data) {
   });
 }
 
+// ── Supabase Realtime ──
+function subscribeToMonth(monthKey, onUpdate) {
+  const wsUrl = SUPABASE_URL.replace("https://", "wss://") + "/realtime/v1/websocket?apikey=" + SUPABASE_KEY + "&vsn=1.0.0";
+  const ws = new WebSocket(wsUrl);
+  let heartbeat;
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ topic: "realtime:public:kakebo", event: "phx_join", payload: { config: { broadcast: { self: false }, presence: { key: "" }, postgres_changes: [{ event: "UPDATE", schema: "public", table: "kakebo", filter: `month_key=eq.${monthKey}` }, { event: "INSERT", schema: "public", table: "kakebo", filter: `month_key=eq.${monthKey}` }] } }, ref: "1" }));
+    heartbeat = setInterval(() => ws.readyState === 1 && ws.send(JSON.stringify({ topic: "phoenix", event: "heartbeat", payload: {}, ref: "hb" })), 25000);
+  };
+
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.event === "postgres_changes" && msg.payload?.data?.record?.data) {
+        onUpdate(msg.payload.data.record.data);
+      }
+    } catch {}
+  };
+
+  ws.onclose = () => clearInterval(heartbeat);
+
+  return () => { clearInterval(heartbeat); ws.close(); };
+}
+
 const CATEGORIES = [
   { id: "supervivencia", label: "Supervivencia", color: "#7bc47f", bg: "#f0faf0", emoji: "🌿" },
   { id: "ocio", label: "Ocio y Vicio", color: "#f4a261", bg: "#fff8f0", emoji: "🍊" },
@@ -65,6 +90,7 @@ export default function Kakebo() {
   const [loading, setLoading] = useState(true);
   const [saveStatus, setSaveStatus] = useState(null);
   const saveTimer = useRef(null);
+  const isSaving = useRef(false);
 
   const key = monthKey(year, month);
 
@@ -79,16 +105,27 @@ export default function Kakebo() {
     });
   }, [key]);
 
+  // Realtime — actualiza cuando otro dispositivo guarda
+  useEffect(() => {
+    const unsub = subscribeToMonth(key, (newData) => {
+      if (!isSaving.current) setMdata(newData);
+    });
+    return unsub;
+  }, [key]);
+
   function updateMonth(newMdata) {
     setMdata(newMdata);
     setSaveStatus("saving");
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
+        isSaving.current = true;
         await sbUpsert(key, newMdata);
+        isSaving.current = false;
         setSaveStatus("saved");
         setTimeout(() => setSaveStatus(null), 2000);
       } catch {
+        isSaving.current = false;
         setSaveStatus("error");
       }
     }, 800);
