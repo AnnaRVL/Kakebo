@@ -601,3 +601,4 @@ function BalanceBlock({ label, value, color, big }) {
     </div>
   );
 }
+ 
