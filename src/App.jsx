@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import * as XLSX from "xlsx";
 
 // ── Supabase config ──
 const SUPABASE_URL = "https://xcqhdqiwjbznogyknbzq.supabase.co";
@@ -48,6 +49,73 @@ function subscribeToMonth(monthKey, onUpdate) {
   ws.onclose = () => clearInterval(heartbeat);
 
   return () => { clearInterval(heartbeat); ws.close(); };
+}
+
+// ── Export to Excel ──
+function exportToExcel(mdata, year, month, weeks, MONTHS, CATEGORIES) {
+  const wb = XLSX.utils.book_new();
+  const monthName = MONTHS[month];
+
+  // Sheet 1: Monthly data
+  const rows = [];
+
+  // Ingresos
+  rows.push(["INGRESOS", "", ""]);
+  rows.push(["Fecha", "Concepto", "Importe"]);
+  mdata.ingresos.forEach(i => rows.push([i.fecha, i.concepto, parseFloat(i.importe) || 0]));
+  const totalIngresos = mdata.ingresos.reduce((s, i) => s + (parseFloat(i.importe) || 0), 0);
+  rows.push(["", "TOTAL INGRESOS", totalIngresos]);
+  rows.push([]);
+
+  // Gastos fijos
+  rows.push(["GASTOS FIJOS", ""]);
+  rows.push(["Concepto", "Importe"]);
+  mdata.gastosFijos.forEach(g => rows.push([g.concepto, parseFloat(g.importe) || 0]));
+  const totalFijos = mdata.gastosFijos.reduce((s, g) => s + (parseFloat(g.importe) || 0), 0);
+  rows.push(["TOTAL GASTOS FIJOS", totalFijos]);
+  rows.push([]);
+
+  // Gastos semanales
+  rows.push(["GASTOS SEMANALES", "", "", "", ""]);
+  rows.push(["Semana", "Día", "Categoría", "Concepto", "Importe"]);
+  let totalGastos = 0;
+  weeks.forEach((week, wIdx) => {
+    week.forEach(day => {
+      CATEGORIES.forEach(cat => {
+        const entries = mdata.gastos[`${day}-${cat.id}`] || [];
+        entries.forEach(e => {
+          const imp = parseFloat(e.importe) || 0;
+          rows.push([`Semana ${wIdx + 1}`, day, cat.label, e.concepto, imp]);
+          totalGastos += imp;
+        });
+      });
+    });
+  });
+  rows.push(["", "", "", "TOTAL GASTOS", totalGastos]);
+  rows.push([]);
+
+  // Resumen
+  const ahorroPrevisto = parseFloat(mdata.ahorroPrevisto) || 0;
+  const ahorroReal = totalIngresos - totalFijos - totalGastos;
+  rows.push(["RESUMEN", "", "", "", ""]);
+  rows.push(["Total ingresos", "Total fijos", "Total gastos semanales", "Ahorro previsto", "Ahorro real"]);
+  rows.push([totalIngresos, totalFijos, totalGastos, ahorroPrevisto, ahorroReal]);
+  rows.push([]);
+
+  // Reflexión
+  if (mdata.reflexion?.objetivos || mdata.reflexion?.promesas || mdata.reflexion?.balance || mdata.reflexion?.mejora) {
+    rows.push(["REFLEXIÓN"]);
+    if (mdata.reflexion?.objetivos) rows.push(["Objetivos", mdata.reflexion.objetivos]);
+    if (mdata.reflexion?.promesas) rows.push(["Promesas", mdata.reflexion.promesas]);
+    if (mdata.reflexion?.balance) rows.push(["Balance", mdata.reflexion.balance]);
+    if (mdata.reflexion?.mejora) rows.push(["Mejora", mdata.reflexion.mejora]);
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{ wch: 12 }, { wch: 10 }, { wch: 22 }, { wch: 28 }, { wch: 12 }];
+  XLSX.utils.book_append_sheet(wb, ws, monthName + " " + year);
+
+  XLSX.writeFile(wb, `kakebo-${monthName.toLowerCase()}-${year}.xlsx`);
 }
 
 const CATEGORIES = [
@@ -203,6 +271,11 @@ export default function Kakebo() {
             <button className="btn btn-ghost btn-sm" onClick={prevMonth}>‹</button>
             <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 700, minWidth: 200, textAlign: "center" }}>{MONTHS[month]} {year}</div>
             <button className="btn btn-ghost btn-sm" onClick={nextMonth}>›</button>
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => exportToExcel(mdata, year, month, weeks, MONTHS, CATEGORIES)} style={{ fontSize: 12, color: "#2a9d8f", borderColor: "#2a9d8f" }}>
+              ⬇ Exportar Excel
+            </button>
           </div>
         </div>
 
@@ -367,7 +440,7 @@ function WeekView({ week, weekNum, mdata, presupuesto, gastosPrevios, addGasto, 
                     <td key={d} style={{ padding: "6px 4px", textAlign: "center", verticalAlign: "top", background: entries.length ? cat.bg : "white" }}>
                       {entries.map((e, i) => (
                         <div key={i} style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 2, justifyContent: "center", marginBottom: 2 }}>
-                          <span style={{ color: cat.color, fontWeight: 600 }}>{parseFloat(e.importe).toFixed(0)}€</span>
+                          <span style={{ color: cat.color, fontWeight: 600 }}>{parseFloat(e.importe).toFixed(0)}€</span><span style={{ color: "#888", fontSize: 10, marginLeft: 3 }}>{e.concepto}</span>
                           <button onClick={() => removeGasto(d, cat.id, i)} style={{ background: "none", border: "none", cursor: "pointer", color: "#ddd", fontSize: 9, padding: 0 }}>✕</button>
                         </div>
                       ))}
