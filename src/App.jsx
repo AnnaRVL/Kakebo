@@ -204,8 +204,101 @@ function getWeeksInMonth(year, month) {
 }
 
 function monthKey(year, month) { return `${year}-${month}`; }
+
+// ── Recurrencias ──
+const MAX_MESES_RECURRENCIA = 12;
+const PERIODICIDADES = [
+  { id: "unica",      label: "Solo este mes", saltoMeses: 0 },
+  { id: "mensual",    label: "Mensual",       saltoMeses: 1 },
+  { id: "trimestral", label: "Trimestral",    saltoMeses: 3 },
+  { id: "semestral",  label: "Semestral",     saltoMeses: 6 },
+  { id: "anual",      label: "Anual",         saltoMeses: 12 },
+];
+function periodoInfo(id) { return PERIODICIDADES.find(p => p.id === id) || PERIODICIDADES[0]; }
+
+function nuevoRecurrenteId() {
+  return `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+}
+
+// Avanza n meses desde (year, month) y devuelve [year, month]
+function sumarMeses(year, month, n) {
+  const total = year * 12 + month + n;
+  return [Math.floor(total / 12), total % 12];
+}
+
+// Meses futuros (sin incluir el actual) en los que debe aparecer la recurrencia
+function mesesDestino(year, month, periodicidad, finYear, finMonth) {
+  const { saltoMeses } = periodoInfo(periodicidad);
+  if (!saltoMeses) return [];
+  const destinos = [];
+  for (let n = saltoMeses; n <= MAX_MESES_RECURRENCIA; n += saltoMeses) {
+    const [y, m] = sumarMeses(year, month, n);
+    if (finYear != null && (y * 12 + m) > (finYear * 12 + finMonth)) break;
+    destinos.push([y, m]);
+  }
+  return destinos;
+}
+
+// Opciones de fecha fin: los próximos 12 meses desde el mes actual
+function opcionesFin(year, month) {
+  const ops = [];
+  for (let n = 1; n <= MAX_MESES_RECURRENCIA; n++) {
+    const [y, m] = sumarMeses(year, month, n);
+    ops.push({ year: y, month: m, valor: `${y}-${m}` });
+  }
+  return ops;
+}
+
 function initMonth() {
   return { ingresos: [], gastosFijos: [], ahorroPrevisto: "", gastos: {}, creditCard: [], reflexion: { objetivos: "", promesas: "", balance: "", mejora: "" } };
+}
+
+// ── Fila con opciones de periodicidad ──
+function FilaPeriodica({ row, idx, campo, color, year, month, onCambiarPeriodicidad, onCambiarFin, onRemove, children }) {
+  const [abierto, setAbierto] = useState(false);
+  const esRecurrente = row.periodicidad && row.periodicidad !== "unica";
+  const colSpan = campo === "ingresos" ? 4 : 3;
+  const finValor = row.finYear != null ? `${row.finYear}-${row.finMonth}` : "";
+
+  return (
+    <>
+      <tr>
+        {children}
+        <td style={{ whiteSpace: "nowrap" }}>
+          <button
+            title={esRecurrente ? `Periódico: ${periodoInfo(row.periodicidad).label.toLowerCase()}` : "Hacer periódico"}
+            onClick={() => setAbierto(a => !a)}
+            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, padding: "0 2px", color: esRecurrente ? color : "#ccc" }}
+          >↻</button>
+          <button onClick={onRemove} style={{ background: "none", border: "none", cursor: "pointer", color: "#ccc", fontSize: 14, padding: "0 2px" }}>✕</button>
+        </td>
+      </tr>
+      {abierto && (
+        <tr>
+          <td colSpan={colSpan} style={{ paddingBottom: 8 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, background: "#faf7f2", borderRadius: 6, padding: "8px 10px", fontFamily: "'Source Sans 3', sans-serif", fontSize: 12 }}>
+              <span style={{ color: "#888" }}>Se repite:</span>
+              <select value={row.periodicidad || "unica"} onChange={e => onCambiarPeriodicidad(campo, idx, e.target.value)}>
+                {PERIODICIDADES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+              </select>
+              {esRecurrente && (
+                <>
+                  <span style={{ color: "#888" }}>hasta:</span>
+                  <select value={finValor} onChange={e => onCambiarFin(campo, idx, e.target.value)}>
+                    <option value="">Sin fecha fin (12 meses)</option>
+                    {opcionesFin(year, month).map(o => (
+                      <option key={o.valor} value={o.valor}>{MONTHS[o.month]} {o.year}</option>
+                    ))}
+                  </select>
+                </>
+              )}
+              <button className="btn btn-ghost btn-sm" onClick={() => setAbierto(false)}>Listo</button>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
 }
 
 // ── Pantalla de acceso ──
@@ -351,12 +444,139 @@ function Kakebo({ session }) {
   function totalCategoriaMes(catId) { return weeks.reduce((s, _, i) => s + weeklyTotal(i, catId), 0); }
   const ahorroReal = totalIngresos - totalFijos - totalGastosMes();
 
-  function addIngreso() { updateMonth({ ...mdata, ingresos: [...mdata.ingresos, { fecha: "", concepto: "", importe: "" }] }); }
-  function updateIngreso(idx, f, v) { const a = [...mdata.ingresos]; a[idx] = { ...a[idx], [f]: v }; updateMonth({ ...mdata, ingresos: a }); }
-  function removeIngreso(idx) { updateMonth({ ...mdata, ingresos: mdata.ingresos.filter((_, i) => i !== idx) }); }
-  function addFijo() { updateMonth({ ...mdata, gastosFijos: [...mdata.gastosFijos, { concepto: "", importe: "" }] }); }
-  function updateFijo(idx, f, v) { const a = [...mdata.gastosFijos]; a[idx] = { ...a[idx], [f]: v }; updateMonth({ ...mdata, gastosFijos: a }); }
-  function removeFijo(idx) { updateMonth({ ...mdata, gastosFijos: mdata.gastosFijos.filter((_, i) => i !== idx) }); }
+  // ── Propagación de recurrencias a meses futuros ──
+  // campo: "ingresos" | "gastosFijos"
+  async function propagarAMeses(campo, fila, destinos, modo) {
+    setSaveStatus("saving");
+    try {
+      for (const [y, m] of destinos) {
+        const k = monthKey(y, m);
+        let destino = null;
+        try { destino = await sbGet(k, session); } catch (err) { if (err.message === "401") { signOut(); return; } }
+        const base = destino || initMonth();
+        const lista = [...(base[campo] || [])];
+        const pos = lista.findIndex(r => r.recurrenteId && r.recurrenteId === fila.recurrenteId);
+
+        if (modo === "eliminar") {
+          if (pos === -1) continue;
+          lista.splice(pos, 1);
+        } else {
+          const copia = { ...fila };
+          if (pos === -1) lista.push(copia);
+          else lista[pos] = { ...lista[pos], ...copia };
+        }
+        await sbUpsert(k, { ...base, [campo]: lista }, session);
+      }
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus(null), 2000);
+    } catch (err) {
+      if (err.message === "401") { signOut(); return; }
+      setSaveStatus("error");
+    }
+  }
+
+  // Pregunta "¿solo este mes o también los siguientes?" y actúa en consecuencia
+  function aplicarConAlcance(campo, idx, filaActualizada, accion) {
+    const lista = campo === "ingresos" ? mdata.ingresos : mdata.gastosFijos;
+    const original = lista[idx];
+    const esRecurrente = original?.recurrenteId && original?.periodicidad && original.periodicidad !== "unica";
+
+    // 1) Aplicar siempre al mes actual
+    const nuevaLista = [...lista];
+    if (accion === "eliminar") nuevaLista.splice(idx, 1);
+    else nuevaLista[idx] = filaActualizada;
+    updateMonth({ ...mdata, [campo]: nuevaLista });
+
+    // 2) Si es recurrente, preguntar por los meses siguientes
+    if (!esRecurrente) return;
+    const verbo = accion === "eliminar" ? "eliminar" : "aplicar el cambio";
+    const tambien = window.confirm(
+      `"${original.concepto || "Esta fila"}" es un apunte periódico.\n\n` +
+      `¿Quieres ${verbo} también en los meses siguientes?\n\n` +
+      `Aceptar = también en los siguientes\nCancelar = solo en este mes`
+    );
+    if (!tambien) return;
+
+    const [fy, fm] = original.finYear != null ? [original.finYear, original.finMonth] : [null, null];
+    const destinos = mesesDestino(year, month, original.periodicidad, fy, fm);
+    if (!destinos.length) return;
+    propagarAMeses(campo, accion === "eliminar" ? original : filaActualizada, destinos, accion);
+  }
+
+  // ── Ingresos ──
+  function addIngreso() { updateMonth({ ...mdata, ingresos: [...mdata.ingresos, { fecha: "", concepto: "", importe: "", periodicidad: "unica" }] }); }
+  function updateIngreso(idx, f, v) {
+    const a = [...mdata.ingresos]; a[idx] = { ...a[idx], [f]: v }; updateMonth({ ...mdata, ingresos: a });
+  }
+  function editarIngreso(idx, f, v) {
+    const fila = { ...mdata.ingresos[idx], [f]: v };
+    aplicarConAlcance("ingresos", idx, fila, "editar");
+  }
+  function removeIngreso(idx) { aplicarConAlcance("ingresos", idx, null, "eliminar"); }
+
+  // ── Gastos fijos ──
+  function addFijo() { updateMonth({ ...mdata, gastosFijos: [...mdata.gastosFijos, { concepto: "", importe: "", periodicidad: "unica" }] }); }
+  function updateFijo(idx, f, v) {
+    const a = [...mdata.gastosFijos]; a[idx] = { ...a[idx], [f]: v }; updateMonth({ ...mdata, gastosFijos: a });
+  }
+  function editarFijo(idx, f, v) {
+    const fila = { ...mdata.gastosFijos[idx], [f]: v };
+    aplicarConAlcance("gastosFijos", idx, fila, "editar");
+  }
+  function removeFijo(idx) { aplicarConAlcance("gastosFijos", idx, null, "eliminar"); }
+
+  // ── Cambiar periodicidad / fecha fin ──
+  function cambiarPeriodicidad(campo, idx, nuevaPeriodicidad) {
+    const lista = campo === "ingresos" ? [...mdata.ingresos] : [...mdata.gastosFijos];
+    const anterior = lista[idx];
+    const fila = { ...anterior, periodicidad: nuevaPeriodicidad };
+
+    if (nuevaPeriodicidad === "unica") {
+      // Deja de ser recurrente: limpiar y ofrecer borrar los futuros
+      const tenia = anterior.recurrenteId && anterior.periodicidad !== "unica";
+      delete fila.finYear; delete fila.finMonth;
+      lista[idx] = fila;
+      updateMonth({ ...mdata, [campo]: lista });
+      if (tenia) {
+        const borrar = window.confirm(`Has quitado la periodicidad de "${anterior.concepto || "esta fila"}".\n\n¿Quieres eliminarla también de los meses futuros?`);
+        if (borrar) {
+          const [fy, fm] = anterior.finYear != null ? [anterior.finYear, anterior.finMonth] : [null, null];
+          propagarAMeses(campo, anterior, mesesDestino(year, month, anterior.periodicidad, fy, fm), "eliminar");
+        }
+      }
+      return;
+    }
+
+    if (!fila.recurrenteId) fila.recurrenteId = nuevoRecurrenteId();
+    lista[idx] = fila;
+    updateMonth({ ...mdata, [campo]: lista });
+
+    const destinos = mesesDestino(year, month, nuevaPeriodicidad, fila.finYear ?? null, fila.finMonth ?? null);
+    if (destinos.length) propagarAMeses(campo, fila, destinos, "editar");
+  }
+
+  function cambiarFin(campo, idx, valor) {
+    const lista = campo === "ingresos" ? [...mdata.ingresos] : [...mdata.gastosFijos];
+    const anterior = lista[idx];
+    const fila = { ...anterior };
+
+    if (!valor) { delete fila.finYear; delete fila.finMonth; }
+    else { const [y, m] = valor.split("-").map(Number); fila.finYear = y; fila.finMonth = m; }
+    lista[idx] = fila;
+    updateMonth({ ...mdata, [campo]: lista });
+
+    if (!fila.recurrenteId || fila.periodicidad === "unica") return;
+
+    // Quitar de los meses que quedan fuera del nuevo rango
+    const antes = mesesDestino(year, month, anterior.periodicidad, anterior.finYear ?? null, anterior.finMonth ?? null);
+    const ahora = mesesDestino(year, month, fila.periodicidad, fila.finYear ?? null, fila.finMonth ?? null);
+    const clave = ([y, m]) => `${y}-${m}`;
+    const setAhora = new Set(ahora.map(clave));
+    const sobrantes = antes.filter(d => !setAhora.has(clave(d)));
+
+    if (sobrantes.length) propagarAMeses(campo, anterior, sobrantes, "eliminar");
+    if (ahora.length) propagarAMeses(campo, fila, ahora, "editar");
+  }
   function addGasto(day, catId, concepto, importe) {
     const k = `${day}-${catId}`;
     updateMonth({ ...mdata, gastos: { ...mdata.gastos, [k]: [...(mdata.gastos[k] || []), { concepto, importe }] } });
@@ -446,12 +666,16 @@ function Kakebo({ session }) {
                       <thead><tr><th>Fecha</th><th>Concepto</th><th>Importe</th><th></th></tr></thead>
                       <tbody>
                         {mdata.ingresos.map((row, i) => (
-                          <tr key={i}>
-                            <td><input type="text" value={row.fecha} onChange={e => updateIngreso(i, "fecha", e.target.value)} placeholder="dd/mm" style={{ width: 50 }} /></td>
-                            <td><input type="text" value={row.concepto} onChange={e => updateIngreso(i, "concepto", e.target.value)} placeholder="Concepto" /></td>
-                            <td><input type="number" value={row.importe} onChange={e => updateIngreso(i, "importe", e.target.value)} placeholder="0" style={{ width: 60 }} /></td>
-                            <td><button style={{ background: "none", border: "none", cursor: "pointer", color: "#ccc", fontSize: 14 }} onClick={() => removeIngreso(i)}>✕</button></td>
-                          </tr>
+                          <FilaPeriodica
+                            key={i} row={row} idx={i} campo="ingresos" color="#7bc47f"
+                            year={year} month={month}
+                            onCambiarPeriodicidad={cambiarPeriodicidad} onCambiarFin={cambiarFin}
+                            onRemove={() => removeIngreso(i)}
+                          >
+                            <td><input type="text" value={row.fecha} onChange={e => updateIngreso(i, "fecha", e.target.value)} onBlur={e => editarIngreso(i, "fecha", e.target.value)} placeholder="dd/mm" style={{ width: 50 }} /></td>
+                            <td><input type="text" value={row.concepto} onChange={e => updateIngreso(i, "concepto", e.target.value)} onBlur={e => editarIngreso(i, "concepto", e.target.value)} placeholder="Concepto" /></td>
+                            <td><input type="number" value={row.importe} onChange={e => updateIngreso(i, "importe", e.target.value)} onBlur={e => editarIngreso(i, "importe", e.target.value)} placeholder="0" style={{ width: 60 }} /></td>
+                          </FilaPeriodica>
                         ))}
                       </tbody>
                     </table>
@@ -466,11 +690,15 @@ function Kakebo({ session }) {
                       <thead><tr><th>Concepto</th><th>Importe</th><th></th></tr></thead>
                       <tbody>
                         {mdata.gastosFijos.map((row, i) => (
-                          <tr key={i}>
-                            <td><input type="text" value={row.concepto} onChange={e => updateFijo(i, "concepto", e.target.value)} placeholder="Concepto" /></td>
-                            <td><input type="number" value={row.importe} onChange={e => updateFijo(i, "importe", e.target.value)} placeholder="0" style={{ width: 60 }} /></td>
-                            <td><button style={{ background: "none", border: "none", cursor: "pointer", color: "#ccc", fontSize: 14 }} onClick={() => removeFijo(i)}>✕</button></td>
-                          </tr>
+                          <FilaPeriodica
+                            key={i} row={row} idx={i} campo="gastosFijos" color="#e07a7a"
+                            year={year} month={month}
+                            onCambiarPeriodicidad={cambiarPeriodicidad} onCambiarFin={cambiarFin}
+                            onRemove={() => removeFijo(i)}
+                          >
+                            <td><input type="text" value={row.concepto} onChange={e => updateFijo(i, "concepto", e.target.value)} onBlur={e => editarFijo(i, "concepto", e.target.value)} placeholder="Concepto" /></td>
+                            <td><input type="number" value={row.importe} onChange={e => updateFijo(i, "importe", e.target.value)} onBlur={e => editarFijo(i, "importe", e.target.value)} placeholder="0" style={{ width: 60 }} /></td>
+                          </FilaPeriodica>
                         ))}
                       </tbody>
                     </table>
