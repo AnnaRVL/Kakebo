@@ -440,7 +440,7 @@ function WeekView({ week, weekNum, mdata, presupuesto, gastosPrevios, addGasto, 
                     <td key={d} style={{ padding: "6px 4px", textAlign: "center", verticalAlign: "top", background: entries.length ? cat.bg : "white" }}>
                       {entries.map((e, i) => (
                         <div key={i} style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 2, justifyContent: "center", marginBottom: 2 }}>
-                          <span style={{ color: cat.color, fontWeight: 600 }}>{parseFloat(e.importe).toFixed(0)}€</span><span style={{ color: "#888", fontSize: 10, marginLeft: 3 }}>{e.concepto}</span><span style={{ color: "#888", fontSize: 10, marginLeft: 3 }}>{e.concepto}</span>
+                          <span style={{ color: cat.color, fontWeight: 600 }}>{parseFloat(e.importe).toFixed(0)}€</span><span style={{ color: "#888", fontSize: 10, marginLeft: 3 }}>{e.concepto}</span>
                           <button onClick={() => removeGasto(d, cat.id, i)} style={{ background: "none", border: "none", cursor: "pointer", color: "#ddd", fontSize: 9, padding: 0 }}>✕</button>
                         </div>
                       ))}
@@ -601,4 +601,3 @@ function BalanceBlock({ label, value, color, big }) {
     </div>
   );
 }
- 
