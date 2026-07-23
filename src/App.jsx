@@ -5,35 +5,94 @@ import * as XLSX from "xlsx";
 const SUPABASE_URL = "https://xcqhdqiwjbznogyknbzq.supabase.co";
 const SUPABASE_KEY = "sb_publishable_Qq2wKi6JOS2olbgCubqxlQ_lGVcXBZf";
 
-async function sbGet(monthKey) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/kakebo?month_key=eq.${monthKey}&select=data`, {
-    headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` }
+// ── Auth ──
+const TOKEN_STORE = "kakebo_session";
+
+function loadSession() {
+  try { return JSON.parse(localStorage.getItem(TOKEN_STORE)) || null; } catch { return null; }
+}
+function saveSession(s) {
+  if (s) localStorage.setItem(TOKEN_STORE, JSON.stringify(s));
+  else localStorage.removeItem(TOKEN_STORE);
+}
+
+async function authRequest(path, body) {
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/${path}`, {
+    method: "POST",
+    headers: { "apikey": SUPABASE_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify(body)
   });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error_description || json.msg || json.message || "Error de acceso");
+  return json;
+}
+
+async function signIn(email, password) {
+  const json = await authRequest("token?grant_type=password", { email, password });
+  const session = { access_token: json.access_token, refresh_token: json.refresh_token, user_id: json.user.id, email: json.user.email };
+  saveSession(session);
+  return session;
+}
+
+async function signUp(email, password) {
+  const json = await authRequest("signup", { email, password });
+  if (json.access_token) {
+    const session = { access_token: json.access_token, refresh_token: json.refresh_token, user_id: json.user.id, email: json.user.email };
+    saveSession(session);
+    return session;
+  }
+  return null; // requiere confirmar por email
+}
+
+async function refreshSession(session) {
+  try {
+    const json = await authRequest("token?grant_type=refresh_token", { refresh_token: session.refresh_token });
+    const next = { access_token: json.access_token, refresh_token: json.refresh_token, user_id: json.user.id, email: json.user.email };
+    saveSession(next);
+    return next;
+  } catch {
+    saveSession(null);
+    return null;
+  }
+}
+
+function signOut() {
+  saveSession(null);
+  window.location.reload();
+}
+
+// ── Datos ──
+async function sbGet(monthKey, session) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/kakebo?month_key=eq.${monthKey}&select=data`, {
+    headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${session.access_token}` }
+  });
+  if (res.status === 401) throw new Error("401");
   const rows = await res.json();
   return rows?.[0]?.data || null;
 }
 
-async function sbUpsert(monthKey, data) {
-  await fetch(`${SUPABASE_URL}/rest/v1/kakebo`, {
+async function sbUpsert(monthKey, data, session) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/kakebo`, {
     method: "POST",
     headers: {
       "apikey": SUPABASE_KEY,
-      "Authorization": `Bearer ${SUPABASE_KEY}`,
+      "Authorization": `Bearer ${session.access_token}`,
       "Content-Type": "application/json",
       "Prefer": "resolution=merge-duplicates"
     },
-    body: JSON.stringify({ month_key: monthKey, data })
+    body: JSON.stringify({ user_id: session.user_id, month_key: monthKey, data })
   });
+  if (res.status === 401) throw new Error("401");
 }
 
 // ── Supabase Realtime ──
-function subscribeToMonth(monthKey, onUpdate) {
+function subscribeToMonth(monthKey, session, onUpdate) {
   const wsUrl = SUPABASE_URL.replace("https://", "wss://") + "/realtime/v1/websocket?apikey=" + SUPABASE_KEY + "&vsn=1.0.0";
   const ws = new WebSocket(wsUrl);
   let heartbeat;
 
   ws.onopen = () => {
-    ws.send(JSON.stringify({ topic: "realtime:public:kakebo", event: "phx_join", payload: { config: { broadcast: { self: false }, presence: { key: "" }, postgres_changes: [{ event: "UPDATE", schema: "public", table: "kakebo", filter: `month_key=eq.${monthKey}` }, { event: "INSERT", schema: "public", table: "kakebo", filter: `month_key=eq.${monthKey}` }] } }, ref: "1" }));
+    ws.send(JSON.stringify({ topic: "realtime:public:kakebo", event: "phx_join", payload: { config: { broadcast: { self: false }, presence: { key: "" }, postgres_changes: [{ event: "UPDATE", schema: "public", table: "kakebo", filter: `month_key=eq.${monthKey}` }, { event: "INSERT", schema: "public", table: "kakebo", filter: `month_key=eq.${monthKey}` }] }, access_token: session.access_token }, ref: "1" }));
     heartbeat = setInterval(() => ws.readyState === 1 && ws.send(JSON.stringify({ topic: "phoenix", event: "heartbeat", payload: {}, ref: "hb" })), 25000);
   };
 
@@ -149,7 +208,84 @@ function initMonth() {
   return { ingresos: [], gastosFijos: [], ahorroPrevisto: "", gastos: {}, creditCard: [], reflexion: { objetivos: "", promesas: "", balance: "", mejora: "" } };
 }
 
-export default function Kakebo() {
+// ── Pantalla de acceso ──
+function Login({ onSession }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [modo, setModo] = useState("login");
+  const [mensaje, setMensaje] = useState("");
+  const [cargando, setCargando] = useState(false);
+
+  async function submit() {
+    if (!email || !password) { setMensaje("Escribe tu email y tu contraseña."); return; }
+    setCargando(true); setMensaje("");
+    try {
+      if (modo === "login") {
+        onSession(await signIn(email, password));
+      } else {
+        const s = await signUp(email, password);
+        if (s) onSession(s);
+        else setMensaje("Cuenta creada. Revisa tu correo para confirmarla y vuelve a entrar.");
+      }
+    } catch (err) {
+      setMensaje(err.message);
+    }
+    setCargando(false);
+  }
+
+  return (
+    <div style={{ fontFamily: "'Georgia','Times New Roman',serif", minHeight: "100vh", background: "#faf7f2", color: "#2a2a2a", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Source+Sans+3:wght@300;400;600&display=swap');
+        * { box-sizing: border-box; }
+        .login-input { width: 100%; border: none; border-bottom: 1.5px solid #ccc; background: transparent; font-family: 'Source Sans 3', sans-serif; font-size: 15px; color: #2a2a2a; outline: none; padding: 8px 4px; margin-bottom: 18px; }
+        .login-input:focus { border-bottom-color: #e83e8c; }
+        .login-btn { width: 100%; cursor: pointer; border: none; border-radius: 4px; padding: 11px; font-size: 14px; font-family: 'Source Sans 3', sans-serif; background: #e83e8c; color: white; }
+        .login-btn:disabled { opacity: 0.5; cursor: default; }
+        .login-link { background: none; border: none; color: #e83e8c; font-family: 'Source Sans 3', sans-serif; font-size: 13px; cursor: pointer; text-decoration: underline; padding: 0; margin-top: 16px; }
+      `}</style>
+      <div style={{ width: "100%", maxWidth: 340, background: "white", borderRadius: 10, padding: 32, boxShadow: "0 2px 20px rgba(0,0,0,0.06)" }}>
+        <h1 style={{ fontFamily: "'Playfair Display', serif", fontSize: 32, margin: 0, letterSpacing: -0.5 }}>Kakebo</h1>
+        <p style={{ fontFamily: "'Source Sans 3', sans-serif", fontSize: 14, color: "#888", marginTop: 4, marginBottom: 28 }}>
+          {modo === "login" ? "Entra en tu presupuesto" : "Crea tu cuenta"}
+        </p>
+
+        <input className="login-input" type="email" placeholder="Email" value={email}
+          onChange={e => setEmail(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} />
+        <input className="login-input" type="password" placeholder="Contraseña" value={password}
+          onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} />
+
+        <button className="login-btn" onClick={submit} disabled={cargando}>
+          {cargando ? "Un momento..." : modo === "login" ? "Entrar" : "Crear cuenta"}
+        </button>
+
+        <button className="login-link" onClick={() => { setModo(modo === "login" ? "registro" : "login"); setMensaje(""); }}>
+          {modo === "login" ? "No tengo cuenta todavía" : "Ya tengo cuenta"}
+        </button>
+
+        {mensaje && <p style={{ fontFamily: "'Source Sans 3', sans-serif", fontSize: 13, color: "#c0392b", marginTop: 16, marginBottom: 0 }}>{mensaje}</p>}
+      </div>
+    </div>
+  );
+}
+
+// ── Raíz: decide entre login y app ──
+export default function App() {
+  const [session, setSession] = useState(null);
+  const [comprobando, setComprobando] = useState(true);
+
+  useEffect(() => {
+    const s = loadSession();
+    if (!s) { setComprobando(false); return; }
+    refreshSession(s).then(next => { setSession(next); setComprobando(false); });
+  }, []);
+
+  if (comprobando) return <div style={{ minHeight: "100vh", background: "#faf7f2" }} />;
+  if (!session) return <Login onSession={setSession} />;
+  return <Kakebo session={session} />;
+}
+
+function Kakebo({ session }) {
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
   const [view, setView] = useState("mes");
@@ -164,22 +300,23 @@ export default function Kakebo() {
 
   useEffect(() => {
     setLoading(true);
-    sbGet(key).then(data => {
+    sbGet(key, session).then(data => {
       setMdata(data || initMonth());
       setLoading(false);
-    }).catch(() => {
+    }).catch(err => {
+      if (err.message === "401") { signOut(); return; }
       setMdata(initMonth());
       setLoading(false);
     });
-  }, [key]);
+  }, [key, session]);
 
   // Realtime — actualiza cuando otro dispositivo guarda
   useEffect(() => {
-    const unsub = subscribeToMonth(key, (newData) => {
+    const unsub = subscribeToMonth(key, session, (newData) => {
       if (!isSaving.current) setMdata(newData);
     });
     return unsub;
-  }, [key]);
+  }, [key, session]);
 
   function updateMonth(newMdata) {
     setMdata(newMdata);
@@ -188,12 +325,13 @@ export default function Kakebo() {
     saveTimer.current = setTimeout(async () => {
       try {
         isSaving.current = true;
-        await sbUpsert(key, newMdata);
+        await sbUpsert(key, newMdata, session);
         isSaving.current = false;
         setSaveStatus("saved");
         setTimeout(() => setSaveStatus(null), 2000);
-      } catch {
+      } catch (err) {
         isSaving.current = false;
+        if (err.message === "401") { signOut(); return; }
         setSaveStatus("error");
       }
     }, 800);
@@ -258,6 +396,10 @@ export default function Kakebo() {
       `}</style>
 
       <div style={{ maxWidth: 800, margin: "0 auto", padding: "16px 12px" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, fontFamily: "'Source Sans 3', sans-serif", fontSize: 12, color: "#999", marginBottom: 4 }}>
+          <span>{session.email}</span>
+          <button className="btn btn-ghost btn-sm" onClick={signOut}>Cerrar sesión</button>
+        </div>
         <div style={{ textAlign: "center", marginBottom: 20 }}>
           <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 11, letterSpacing: "0.25em", textTransform: "uppercase", color: "#999", marginBottom: 4 }}>Libro de cuentas para el ahorro doméstico</div>
           <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 36, fontWeight: 900, color: "#e83e8c", letterSpacing: 2, lineHeight: 1 }}>KAKEBO</div>
