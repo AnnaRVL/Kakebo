@@ -189,16 +189,16 @@ const today = new Date();
 
 function getWeeksInMonth(year, month) {
   const weeks = [];
-  let weekStart = new Date(year, month, 1);
-  while (weekStart.getMonth() === month) {
+  const totalDays = new Date(year, month + 1, 0).getDate();
+  let day = 1;
+  while (day <= totalDays) {
+    const dow = new Date(year, month, day).getDay(); // 0=domingo
+    const daysUntilSunday = dow === 0 ? 0 : 7 - dow;
+    const weekLength = Math.min(daysUntilSunday + 1, totalDays - day + 1);
     const days = [];
-    for (let i = 0; i < 7; i++) {
-      const day = new Date(weekStart);
-      day.setDate(weekStart.getDate() + i);
-      if (day.getMonth() === month) days.push(day.getDate());
-    }
-    if (days.length) weeks.push(days);
-    weekStart.setDate(weekStart.getDate() + 7);
+    for (let i = 0; i < weekLength; i++) days.push(day + i);
+    weeks.push(days);
+    day += weekLength;
   }
   return weeks;
 }
