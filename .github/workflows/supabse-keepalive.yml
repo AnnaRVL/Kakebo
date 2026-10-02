@@ -1,0 +1,34 @@
+name: Supabase keep-alive
+
+# Evita que Supabase (plan gratuito) pause el proyecto por inactividad.
+# Hace una consulta mínima a la base de datos cada 3 días.
+
+on:
+  schedule:
+    - cron: "0 7 */3 * *"   # cada 3 días a las 07:00 UTC
+  workflow_dispatch:         # permite lanzarla a mano desde la pestaña Actions
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Consulta mínima a Supabase
+        env:
+          SUPABASE_URL: https://xcqhdqiwjbznogyknbzq.supabase.co
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          # Las claves nuevas (sb_publishable_...) van solo en "apikey";
+          # las antiguas (eyJ...) también necesitan la cabecera Authorization.
+          AUTH=()
+          case "$SUPABASE_ANON_KEY" in
+            eyJ*) AUTH=(-H "Authorization: Bearer $SUPABASE_ANON_KEY") ;;
+          esac
+          status=$(curl -s -o /tmp/resp.txt -w "%{http_code}" \
+            "$SUPABASE_URL/rest/v1/kakebo?select=month_key&limit=1" \
+            -H "apikey: $SUPABASE_ANON_KEY" "${AUTH[@]}")
+          echo "HTTP $status"
+          cat /tmp/resp.txt
+          if [ "$status" -ge 400 ]; then
+            echo "Supabase no ha respondido bien"
+            exit 1
+          fi
